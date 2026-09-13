@@ -48,7 +48,9 @@ withDefaults(defineProps<Props>(), {
 </template>
 
 <style scoped>
+@reference "../../../style.css";
 .sub-setting-item {
-  @apply flex items-center sm:items-start gap-2 sm:gap-4 p-2 sm:p-2.5 rounded-md bg-bg-tertiary;
+  @apply flex items-center sm:items-start gap-2 sm:gap-4 p-2 sm:p-2.5 bg-bg-tertiary;
+  border-radius: var(--ui-radius-surface);
 }
 </style>

@@ -39,9 +39,10 @@ func TestHandleArticles_ListAndImageGallery(t *testing.T) {
 		t.Fatalf("AddFeed: %v", err)
 	}
 
+	now := time.Now()
 	articles := []*models.Article{
-		{FeedID: feedID, Title: "a1", URL: "u1", PublishedAt: time.Now()},
-		{FeedID: feedID, Title: "a2", URL: "u2", PublishedAt: time.Now()},
+		{FeedID: feedID, Title: "a1", URL: "u1", PublishedAt: now.Add(-time.Hour)},
+		{FeedID: feedID, Title: "a2", URL: "u2", PublishedAt: now},
 	}
 	if err := h.DB.SaveArticles(context.Background(), articles); err != nil {
 		t.Fatalf("SaveArticles: %v", err)
@@ -60,6 +61,16 @@ func TestHandleArticles_ListAndImageGallery(t *testing.T) {
 	}
 	if len(got) < 2 {
 		t.Fatalf("expected >=2 articles, got %d", len(got))
+	}
+	oldestReq := httptest.NewRequest(http.MethodGet, "/api/articles?sort_order=oldest", nil)
+	oldestRecorder := httptest.NewRecorder()
+	article.HandleArticles(h, oldestRecorder, oldestReq)
+	var oldestFirst []models.Article
+	if err := json.NewDecoder(oldestRecorder.Result().Body).Decode(&oldestFirst); err != nil {
+		t.Fatalf("decode oldest articles: %v", err)
+	}
+	if len(oldestFirst) < 2 || oldestFirst[0].Title != "a1" {
+		t.Fatalf("oldest articles = %#v, want a1 first", oldestFirst)
 	}
 
 	// Image gallery: mark feed as image mode and add image article
@@ -83,6 +94,95 @@ func TestHandleArticles_ListAndImageGallery(t *testing.T) {
 	}
 	if len(imgs) == 0 {
 		t.Fatalf("expected image articles, got 0")
+	}
+
+	videoArticle := &models.Article{FeedID: feedID, Title: "video", URL: "vu", ImageURL: "http://thumb", VideoURL: "https://video.example/watch", PublishedAt: time.Now()}
+	if err := h.DB.SaveArticles(context.Background(), []*models.Article{videoArticle}); err != nil {
+		t.Fatalf("SaveArticles video: %v", err)
+	}
+
+	for mediaType, wantTitle := range map[string]string{"images": "img", "videos": "video"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/articles/images?media_type="+mediaType, nil)
+		w := httptest.NewRecorder()
+		article.HandleImageGalleryArticles(h, w, req)
+		var filtered []models.Article
+		if err := json.NewDecoder(w.Result().Body).Decode(&filtered); err != nil {
+			t.Fatalf("decode %s gallery: %v", mediaType, err)
+		}
+		if len(filtered) != 1 || filtered[0].Title != wantTitle {
+			t.Fatalf("%s gallery = %#v, want only %q", mediaType, filtered, wantTitle)
+		}
+	}
+
+	oldestGalleryReq := httptest.NewRequest(http.MethodGet, "/api/articles/images?sort_order=oldest", nil)
+	oldestGalleryRecorder := httptest.NewRecorder()
+	article.HandleImageGalleryArticles(h, oldestGalleryRecorder, oldestGalleryReq)
+	var oldestGallery []models.Article
+	if err := json.NewDecoder(oldestGalleryRecorder.Result().Body).Decode(&oldestGallery); err != nil {
+		t.Fatalf("decode oldest gallery: %v", err)
+	}
+	if len(oldestGallery) != 2 || oldestGallery[0].Title != "img" {
+		t.Fatalf("oldest gallery = %#v, want img first", oldestGallery)
+	}
+}
+
+func TestHandleMarkAllAsRead_EmptyCategoryScopesUncategorized(t *testing.T) {
+	h := setupHandler(t)
+
+	uncategorizedFeedID, err := h.DB.AddFeed(&models.Feed{Title: "Uncategorized", URL: "http://uncategorized"})
+	if err != nil {
+		t.Fatalf("AddFeed uncategorized: %v", err)
+	}
+	categorizedFeedID, err := h.DB.AddFeed(&models.Feed{Title: "Tech", URL: "http://tech", Category: "Tech"})
+	if err != nil {
+		t.Fatalf("AddFeed categorized: %v", err)
+	}
+
+	uncategorized := &models.Article{
+		FeedID:      uncategorizedFeedID,
+		Title:       "uncategorized",
+		URL:         "http://uncategorized/article",
+		PublishedAt: time.Now(),
+	}
+	categorized := &models.Article{
+		FeedID:      categorizedFeedID,
+		Title:       "categorized",
+		URL:         "http://tech/article",
+		PublishedAt: time.Now(),
+	}
+	if err := h.DB.SaveArticles(context.Background(), []*models.Article{uncategorized, categorized}); err != nil {
+		t.Fatalf("SaveArticles: %v", err)
+	}
+
+	uncategorizedArticles, err := h.DB.GetArticles("", uncategorizedFeedID, "", true, 10, 0)
+	if err != nil || len(uncategorizedArticles) != 1 {
+		t.Fatalf("Get uncategorized article: %v", err)
+	}
+	categorizedArticles, err := h.DB.GetArticles("", categorizedFeedID, "", true, 10, 0)
+	if err != nil || len(categorizedArticles) != 1 {
+		t.Fatalf("Get categorized article: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/articles/mark-all-read?category=", nil)
+	w := httptest.NewRecorder()
+	article.HandleMarkAllAsRead(h, w, req)
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Result().StatusCode)
+	}
+
+	uncategorizedAfter, err := h.DB.GetArticleByID(uncategorizedArticles[0].ID)
+	if err != nil {
+		t.Fatalf("Get uncategorized article after mark: %v", err)
+	}
+	categorizedAfter, err := h.DB.GetArticleByID(categorizedArticles[0].ID)
+	if err != nil {
+		t.Fatalf("Get categorized article after mark: %v", err)
+	}
+	if !uncategorizedAfter.IsRead {
+		t.Fatal("uncategorized article should be marked as read")
+	}
+	if categorizedAfter.IsRead {
+		t.Fatal("categorized article should remain unread")
 	}
 }
 
@@ -184,6 +284,74 @@ func TestHandleReloadArticleContentClearsOnlyArticleContent(t *testing.T) {
 
 	if _, err := h.DB.GetArticleByID(articleID); err != nil {
 		t.Fatalf("article should remain after content reload: %v", err)
+	}
+}
+
+func TestHandleCleanupArticlesPreservesProtectedArticles(t *testing.T) {
+	h := setupHandler(t)
+	feedID, err := h.DB.AddFeed(&models.Feed{Title: "Cleanup Feed", URL: "http://example.com/cleanup"})
+	if err != nil {
+		t.Fatalf("AddFeed: %v", err)
+	}
+
+	articles := []*models.Article{
+		{FeedID: feedID, Title: "Delete", URL: "http://example.com/delete", PublishedAt: time.Now()},
+		{FeedID: feedID, Title: "Read", URL: "http://example.com/read", PublishedAt: time.Now(), IsRead: true},
+		{FeedID: feedID, Title: "Favorite", URL: "http://example.com/favorite", PublishedAt: time.Now(), IsFavorite: true},
+		{FeedID: feedID, Title: "Read Later", URL: "http://example.com/read-later", PublishedAt: time.Now(), IsReadLater: true},
+	}
+	if err := h.DB.SaveArticles(context.Background(), articles); err != nil {
+		t.Fatalf("SaveArticles: %v", err)
+	}
+
+	savedArticles, err := h.DB.GetArticles("", feedID, "", false, 10, 0)
+	if err != nil {
+		t.Fatalf("GetArticles: %v", err)
+	}
+	for _, savedArticle := range savedArticles {
+		if err := h.DB.SetArticleContent(savedArticle.ID, "cached "+savedArticle.Title); err != nil {
+			t.Fatalf("SetArticleContent: %v", err)
+		}
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/articles/cleanup", nil)
+	getRecorder := httptest.NewRecorder()
+	article.HandleCleanupArticles(h, getRecorder, getReq)
+	if getRecorder.Result().StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("expected GET cleanup to return 405, got %d", getRecorder.Result().StatusCode)
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/api/articles/cleanup", nil)
+	postRecorder := httptest.NewRecorder()
+	article.HandleCleanupArticles(h, postRecorder, postReq)
+	if postRecorder.Result().StatusCode != http.StatusOK {
+		t.Fatalf("expected cleanup to return 200, got %d: %s", postRecorder.Result().StatusCode, postRecorder.Body.String())
+	}
+
+	var result struct {
+		Deleted  int64  `json:"deleted"`
+		Articles int64  `json:"articles"`
+		Contents int64  `json:"contents"`
+		Type     string `json:"type"`
+	}
+	if err := json.NewDecoder(postRecorder.Result().Body).Decode(&result); err != nil {
+		t.Fatalf("decode cleanup response: %v", err)
+	}
+	if result.Deleted != 1 || result.Articles != 1 || result.Contents != 0 || result.Type != "unimportant" {
+		t.Fatalf("unexpected cleanup response: %+v", result)
+	}
+
+	remaining, err := h.DB.GetArticles("", feedID, "", false, 10, 0)
+	if err != nil {
+		t.Fatalf("GetArticles after cleanup: %v", err)
+	}
+	if len(remaining) != 3 {
+		t.Fatalf("expected 3 protected articles, got %d", len(remaining))
+	}
+	for _, remainingArticle := range remaining {
+		if _, found, err := h.DB.GetArticleContent(remainingArticle.ID); err != nil || !found {
+			t.Fatalf("expected cached content for %q to remain, found=%v, err=%v", remainingArticle.Title, found, err)
+		}
 	}
 }
 

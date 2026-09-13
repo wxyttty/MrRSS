@@ -7,7 +7,6 @@ import {
   PhArrowUp,
   PhArrowRight,
   PhX,
-  PhBookOpen,
   PhStar,
   PhClockCountdown,
   PhArrowSquareOut,
@@ -17,9 +16,9 @@ import {
   PhGear,
   PhPlus,
   PhMagnifyingGlass,
-  PhListDashes,
   PhCircle,
-  PhHeart,
+  PhSquaresFour,
+  PhTray,
   PhArrowCounterClockwise,
   PhFunnel,
 } from '@phosphor-icons/vue';
@@ -139,10 +138,10 @@ const shortcutGroups = computed<Array<{ label: string; items: ShortcutItemData[]
       {
         key: 'goToAllArticles',
         label: t('article.navigation.goToAllArticles'),
-        icon: PhListDashes,
+        icon: PhSquaresFour,
       },
-      { key: 'goToUnread', label: t('article.navigation.goToUnread'), icon: PhCircle },
-      { key: 'goToFavorites', label: t('article.navigation.goToFavorites'), icon: PhHeart },
+      { key: 'goToUnread', label: t('article.navigation.goToUnread'), icon: PhTray },
+      { key: 'goToFavorites', label: t('article.navigation.goToFavorites'), icon: PhStar },
       {
         key: 'goToReadLater',
         label: t('article.navigation.goToReadLater'),
@@ -153,7 +152,7 @@ const shortcutGroups = computed<Array<{ label: string; items: ShortcutItemData[]
   {
     label: t('shortcut.category.articles'),
     items: [
-      { key: 'toggleReadStatus', label: t('shortcut.toggle.readStatus'), icon: PhBookOpen },
+      { key: 'toggleReadStatus', label: t('shortcut.toggle.readStatus'), icon: PhCircle },
       {
         key: 'toggleFavoriteStatus',
         label: t('article.action.toggleFavoriteStatus'),
@@ -186,7 +185,7 @@ const shortcutGroups = computed<Array<{ label: string; items: ShortcutItemData[]
       { key: 'focusSearch', label: t('setting.shortcut.focusFeedSearch'), icon: PhMagnifyingGlass },
       { key: 'toggleFilter', label: t('shortcut.toggle.filter'), icon: PhFunnel },
       { key: 'toggleUnreadFilter', label: t('shortcut.toggle.unreadFilter'), icon: PhCircle },
-      { key: 'toggleFavoritesFilter', label: t('shortcut.toggle.favoritesFilter'), icon: PhHeart },
+      { key: 'toggleFavoritesFilter', label: t('shortcut.toggle.favoritesFilter'), icon: PhStar },
       {
         key: 'toggleReadLaterFilter',
         label: t('shortcut.toggle.readLaterFilter'),

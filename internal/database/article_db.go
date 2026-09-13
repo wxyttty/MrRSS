@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -10,7 +11,16 @@ import (
 
 	"MrRSS/internal/models"
 	"MrRSS/internal/utils/urlutil"
+
+	"modernc.org/sqlite"
 )
+
+const saveArticlesMaxAttempts = 3
+
+var saveArticlesRetryDelays = [...]time.Duration{
+	100 * time.Millisecond,
+	250 * time.Millisecond,
+}
 
 // SaveArticle saves a single article to the database.
 func (db *DB) SaveArticle(article *models.Article) error {
@@ -24,30 +34,47 @@ func (db *DB) SaveArticle(article *models.Article) error {
 }
 
 // SaveArticles saves multiple articles in a transaction.
-// Includes progressive cleanup check to prevent database from exceeding size limit during refresh.
+// Cleanup is scheduled by the fetcher after refresh tasks, never by individual saves.
 func (db *DB) SaveArticles(ctx context.Context, articles []*models.Article) error {
 	db.WaitForReady()
 
-	// Progressive cleanup: check if we need to clean up before saving
-	if len(articles) > 10 {
-		// Only check for larger batches to avoid overhead
-		shouldCleanup, _ := db.ShouldCleanupBeforeSave()
-		if shouldCleanup {
-			log.Printf("Database approaching size limit, running progressive cleanup...")
-			go func() {
-				deleted, err := db.CleanupBySize()
-				if err != nil {
-					log.Printf("Progressive cleanup error: %v", err)
-				} else if deleted > 0 {
-					log.Printf("Progressive cleanup removed %d articles", deleted)
-				}
-			}()
+	for attempt := 1; attempt <= saveArticlesMaxAttempts; attempt++ {
+		err := db.saveArticlesOnce(ctx, articles)
+		if err == nil {
+			return nil
+		}
+		if !isRetryableSQLiteWriteError(err) || attempt == saveArticlesMaxAttempts {
+			return fmt.Errorf("save %d articles after %d attempt(s): %w", len(articles), attempt, err)
+		}
+
+		delay := saveArticlesRetryDelays[attempt-1]
+		log.Printf(
+			"SaveArticles write contention on attempt %d/%d; retrying in %s: %v",
+			attempt,
+			saveArticlesMaxAttempts,
+			delay,
+			err,
+		)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("save %d articles while waiting to retry: %w", len(articles), ctx.Err())
+		case <-timer.C:
 		}
 	}
 
+	return fmt.Errorf("save %d articles: retry attempts exhausted", len(articles))
+}
+
+// saveArticlesOnce performs one all-or-nothing transaction. Any error aborts
+// the batch so callers never observe a successful partial refresh.
+func (db *DB) saveArticlesOnce(ctx context.Context, articles []*models.Article) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -67,7 +94,7 @@ func (db *DB) SaveArticles(ctx context.Context, articles []*models.Article) erro
 			image_url = excluded.image_url,
 			audio_url = excluded.audio_url,
 			video_url = excluded.video_url,
-			published_at = excluded.published_at,
+			published_at = CASE WHEN ? THEN excluded.published_at ELSE articles.published_at END,
 			translated_title = excluded.translated_title,
 			is_read = excluded.is_read,
 			is_favorite = excluded.is_favorite,
@@ -77,55 +104,118 @@ func (db *DB) SaveArticles(ctx context.Context, articles []*models.Article) erro
 			author = excluded.author
 	`)
 	if err != nil {
-		return err
+		return fmt.Errorf("prepare article upsert: %w", err)
 	}
 	defer stmt.Close()
 
-	for _, article := range articles {
+	for index, article := range articles {
 		// Check context before each insert
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("article %d/%d: %w", index+1, len(articles), ctx.Err())
 		default:
 		}
 
 		// Generate unique_id for deduplication
 		uniqueID := urlutil.GenerateArticleUniqueID(article.Title, article.FeedID, article.PublishedAt, article.HasValidPublishedTime)
 
-		// Preserve user-controlled status fields when refreshing an existing article.
-		// Check if article exists to preserve its status
+		// Fetch the existing row to preserve user-controlled status fields and to
+		// detect whether the article actually changed (for no-pubDate feeds).
 		var existingIsRead, existingIsFavorite, existingIsHidden, existingIsReadLater int
-		err := tx.QueryRowContext(ctx, "SELECT is_read, is_favorite, is_hidden, is_read_later FROM articles WHERE unique_id = ?", uniqueID).Scan(&existingIsRead, &existingIsFavorite, &existingIsHidden, &existingIsReadLater)
+		var existingTitle, existingURL, existingImageURL, existingAudioURL, existingVideoURL, existingOriginalSummary, existingAuthor string
+		err := tx.QueryRowContext(ctx, `
+			SELECT is_read, is_favorite, is_hidden, is_read_later,
+				COALESCE(title, ''), COALESCE(url, ''), COALESCE(image_url, ''),
+				COALESCE(audio_url, ''), COALESCE(video_url, ''),
+				COALESCE(original_summary, ''), COALESCE(author, '')
+			FROM articles WHERE unique_id = ?`, uniqueID).Scan(
+			&existingIsRead, &existingIsFavorite, &existingIsHidden, &existingIsReadLater,
+			&existingTitle, &existingURL, &existingImageURL, &existingAudioURL, &existingVideoURL,
+			&existingOriginalSummary, &existingAuthor)
 		isRead := article.IsRead
 		isFavorite := article.IsFavorite
 		isHidden := article.IsHidden
 		isReadLater := article.IsReadLater
+		// Articles with a real pubDate always update their published_at.
+		updatePublishedAt := article.HasValidPublishedTime
 		if err == nil {
 			// Article exists, preserve its status
 			isRead = existingIsRead == 1
 			isFavorite = existingIsFavorite == 1
 			isHidden = existingIsHidden == 1
 			isReadLater = existingIsReadLater == 1
+			// For articles without a pubDate, only move published_at to the current
+			// time when the article actually changed (e.g. edited content); otherwise
+			// keep the original time so it doesn't jump to the top on every refresh.
+			articleChanged := article.Title != existingTitle ||
+				article.URL != existingURL ||
+				article.ImageURL != existingImageURL ||
+				article.AudioURL != existingAudioURL ||
+				article.VideoURL != existingVideoURL ||
+				article.OriginalSummary != existingOriginalSummary ||
+				article.Author != existingAuthor
+			updatePublishedAt = article.HasValidPublishedTime || articleChanged
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf(
+				"article %d/%d (feed %d): load existing state: %w",
+				index+1,
+				len(articles),
+				article.FeedID,
+				err,
+			)
 		}
 
-		_, err = stmt.ExecContext(ctx, article.FeedID, article.Title, article.URL, article.ImageURL, article.AudioURL, article.VideoURL, article.PublishedAt, article.TranslatedTitle, isRead, isFavorite, isHidden, isReadLater, article.Summary, article.OriginalSummary, uniqueID, article.Author)
+		updateTime := 0
+		if updatePublishedAt {
+			updateTime = 1
+		}
+		_, err = stmt.ExecContext(ctx, article.FeedID, article.Title, article.URL, article.ImageURL, article.AudioURL, article.VideoURL, article.PublishedAt, article.TranslatedTitle, isRead, isFavorite, isHidden, isReadLater, article.Summary, article.OriginalSummary, uniqueID, article.Author, updateTime)
 		if err != nil {
-			log.Println("Error saving article in batch:", err)
-			// Continue even if one fails
+			return fmt.Errorf(
+				"article %d/%d (feed %d): upsert: %w",
+				index+1,
+				len(articles),
+				article.FeedID,
+				err,
+			)
 		}
 	}
 
-	return tx.Commit()
+	if err := stmt.Close(); err != nil {
+		return fmt.Errorf("close article upsert statement: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+func isRetryableSQLiteWriteError(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+
+	// SQLite extended result codes retain the primary result in the low byte.
+	// This covers SQLITE_BUSY (5), SQLITE_LOCKED (6), and variants such as
+	// SQLITE_BUSY_SNAPSHOT (517).
+	primaryCode := sqliteErr.Code() & 0xff
+	return primaryCode == 5 || primaryCode == 6
 }
 
 // GetArticles retrieves articles with filtering, pagination, and sorting.
 // Optimized to filter feeds first for category queries, reducing JOIN overhead.
 func (db *DB) GetArticles(filter string, feedID int64, category string, showHidden bool, limit, offset int) ([]models.Article, error) {
-	return db.GetArticlesWithUnreadFilter(filter, feedID, category, showHidden, false, limit, offset)
+	return db.GetArticlesWithUnreadFilterSorted(filter, feedID, category, showHidden, false, "newest", limit, offset)
 }
 
 // GetArticlesWithUnreadFilter returns articles with optional read-state filtering.
 func (db *DB) GetArticlesWithUnreadFilter(filter string, feedID int64, category string, showHidden bool, onlyUnread bool, limit, offset int) ([]models.Article, error) {
+	return db.GetArticlesWithUnreadFilterSorted(filter, feedID, category, showHidden, onlyUnread, "newest", limit, offset)
+}
+
+// GetArticlesWithUnreadFilterSorted returns articles in a validated publication-time order.
+func (db *DB) GetArticlesWithUnreadFilterSorted(filter string, feedID int64, category string, showHidden bool, onlyUnread bool, sortOrder string, limit, offset int, groupBy ...string) ([]models.Article, error) {
 	db.WaitForReady()
 
 	// Optimization: For category queries, first get the feed IDs, then query articles
@@ -201,7 +291,7 @@ func (db *DB) GetArticlesWithUnreadFilter(filter string, feedID int64, category 
 		}
 	}
 
-	if onlyUnread && filter != "unread" {
+	if onlyUnread && filter != "unread" && filter != "favorites" {
 		whereClauses = append(whereClauses, "a.is_read = 0")
 	}
 
@@ -226,7 +316,17 @@ func (db *DB) GetArticlesWithUnreadFilter(filter string, feedID int64, category 
 			query += " AND " + whereClauses[i]
 		}
 	}
-	query += " ORDER BY a.published_at DESC LIMIT ? OFFSET ?"
+	direction := "DESC"
+	if sortOrder == "oldest" {
+		direction = "ASC"
+	}
+	query += " ORDER BY "
+	// Group before LIMIT/OFFSET so a feed stays contiguous across page boundaries.
+	// IDs provide stable group order, independent of duplicate or renamed titles.
+	if len(groupBy) > 0 && groupBy[0] == "feed" {
+		query += "a.feed_id ASC, "
+	}
+	query += "a.published_at " + direction + ", a.id " + direction + " LIMIT ? OFFSET ?"
 	args = append(args, limit, offset)
 
 	rows, err := db.Query(query, args...)
@@ -266,7 +366,7 @@ func (db *DB) GetArticlesWithUnreadFilter(filter string, feedID int64, category 
 func (db *DB) GetArticleByID(id int64) (*models.Article, error) {
 	db.WaitForReady()
 	query := `
-		SELECT a.id, a.feed_id, a.title, a.url, a.image_url, a.audio_url, a.video_url, a.published_at, a.is_read, a.is_favorite, a.is_hidden, a.is_read_later, a.translated_title, a.summary, a.freshrss_item_id, f.title, a.author
+		SELECT a.id, a.feed_id, a.title, a.url, a.image_url, a.audio_url, a.video_url, a.published_at, a.is_read, a.is_favorite, a.is_hidden, a.is_read_later, a.translated_title, a.summary, a.freshrss_item_id, f.title, a.author, a.original_summary
 		FROM articles a
 		JOIN feeds f ON a.feed_id = f.id
 		WHERE a.id = ?
@@ -274,9 +374,9 @@ func (db *DB) GetArticleByID(id int64) (*models.Article, error) {
 	row := db.QueryRow(query, id)
 
 	var a models.Article
-	var imageURL, audioURL, videoURL, translatedTitle, summary, freshrssItemID, author sql.NullString
+	var imageURL, audioURL, videoURL, translatedTitle, summary, freshrssItemID, author, originalSummary sql.NullString
 	var publishedAt sql.NullTime
-	if err := row.Scan(&a.ID, &a.FeedID, &a.Title, &a.URL, &imageURL, &audioURL, &videoURL, &publishedAt, &a.IsRead, &a.IsFavorite, &a.IsHidden, &a.IsReadLater, &translatedTitle, &summary, &freshrssItemID, &a.FeedTitle, &author); err != nil {
+	if err := row.Scan(&a.ID, &a.FeedID, &a.Title, &a.URL, &imageURL, &audioURL, &videoURL, &publishedAt, &a.IsRead, &a.IsFavorite, &a.IsHidden, &a.IsReadLater, &translatedTitle, &summary, &freshrssItemID, &a.FeedTitle, &author, &originalSummary); err != nil {
 		return nil, err
 	}
 	a.ImageURL = imageURL.String
@@ -291,6 +391,7 @@ func (db *DB) GetArticleByID(id int64) (*models.Article, error) {
 	a.Summary = summary.String
 	a.FreshRSSItemID = freshrssItemID.String
 	a.Author = author.String
+	a.OriginalSummary = originalSummary.String
 	return &a, nil
 }
 

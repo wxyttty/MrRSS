@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, onUnmounted } from 'vue';
+import { withShortcut } from '@/composables/ui/shortcutBindings';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { PhEyeSlash, PhStar, PhClockCountdown } from '@phosphor-icons/vue';
 import type { Article } from '@/types/models';
-import { formatDate as formatDateUtil } from '@/utils/date';
+import { useArticleDateFormat } from '@/composables/article/useArticleDateFormat';
+import { useArticleHoverRead } from '@/composables/article/useArticleHoverRead';
 import { getProxiedMediaUrl, isMediaCacheEnabled } from '@/utils/mediaProxy';
 import { useShowPreviewImages } from '@/composables/ui/useShowPreviewImages';
 import { useAppStore } from '@/stores/app';
@@ -13,6 +15,7 @@ import { imageCache } from '@/utils/imageCache';
 interface Props {
   article: Article;
   isActive: boolean;
+  disabled?: boolean;
 }
 
 const props = defineProps<Props>();
@@ -24,7 +27,7 @@ const emit = defineEmits<{
   hoverMarkAsRead: [articleId: number];
 }>();
 
-const { t, locale } = useI18n();
+const { t } = useI18n();
 const { showPreviewImages } = useShowPreviewImages();
 const { settings } = useSettings();
 const store = useAppStore();
@@ -34,39 +37,11 @@ const compactMode = computed(() => {
   return settings.value.layout_mode === 'compact';
 });
 
-// Listen for layout mode changes and initial settings load
-let handleLayoutModeChange: (() => void) | null = null;
-
-// Function to load layout mode settings
-function loadLayoutModeSettings() {
-  fetch('/api/settings')
-    .then((res) => res.json())
-    .then((data) => {
-      settings.value = {
-        ...settings.value,
-        layout_mode: data.layout_mode || 'normal',
-      };
-    })
-    .catch((err) => console.error('Error loading settings in ArticleItem:', err));
-}
-
-onMounted(() => {
-  // Load settings immediately when component mounts
-  loadLayoutModeSettings();
-
-  // Listen for layout mode changes
-  handleLayoutModeChange = () => {
-    loadLayoutModeSettings();
-  };
-
-  window.addEventListener('layout-mode-changed', handleLayoutModeChange);
-});
-
-onUnmounted(() => {
-  if (handleLayoutModeChange) {
-    window.removeEventListener('layout-mode-changed', handleLayoutModeChange);
-  }
-});
+const { enter: handleMouseEnter, leave: handleMouseLeave } = useArticleHoverRead(
+  () => props.article,
+  (id) => emit('hoverMarkAsRead', id),
+  () => props.disabled === true
+);
 
 // Check if article is from RSSHub feed - O(1) lookup using feedMap
 const isRSSHubArticle = computed(() => {
@@ -78,14 +53,9 @@ const isRSSHubArticle = computed(() => {
   return feed?.url.startsWith('rsshub://') || false;
 });
 
-// Translation function wrapper for formatDate
-const formatDateWithI18n = (dateStr: string): string => {
-  return formatDateUtil(dateStr, locale.value, t);
-};
+const { formatArticleDate: formatDateWithI18n, formatArticleDateTime } = useArticleDateFormat();
 
 const mediaCacheEnabled = ref(false);
-const hoverMarkAsRead = ref(false);
-let hoverTimeout: ReturnType<typeof setTimeout> | null = null;
 
 const imageUrl = computed(() => {
   if (!props.article.image_url) return '';
@@ -191,72 +161,13 @@ function handleImageError(event: Event) {
   // Update cache to mark as permanently failed
   imageCache.handleLoadError(url);
 }
-
-// Hover mark as read functionality
-function handleMouseEnter() {
-  // Don't mark as read if:
-  // - Setting is disabled
-  // - Article is already read
-  // - Article is in "Read Later" list (user explicitly wants to read it later)
-  if (!hoverMarkAsRead.value || props.article.is_read || props.article.is_read_later) {
-    return;
-  }
-
-  // Use a small delay to avoid marking as read when quickly scrolling through the list
-  hoverTimeout = setTimeout(() => {
-    markAsRead();
-  }, 300);
-}
-
-function handleMouseLeave() {
-  if (hoverTimeout) {
-    clearTimeout(hoverTimeout);
-    hoverTimeout = null;
-  }
-}
-
-async function markAsRead() {
-  if (props.article.is_read) return;
-
-  try {
-    await fetch(`/api/articles/read?id=${props.article.id}&read=true`, {
-      method: 'POST',
-    });
-    // Emit event to parent to update article state
-    emit('hoverMarkAsRead', props.article.id);
-    await store.fetchUnreadCounts();
-    await store.fetchFilterCounts();
-  } catch (e) {
-    console.error('Error marking as read on hover:', e);
-  }
-}
-
-async function loadSettings() {
-  try {
-    const res = await fetch('/api/settings');
-    const data = await res.json();
-    hoverMarkAsRead.value = data.hover_mark_as_read === 'true';
-  } catch (e) {
-    console.error('Error loading hover mark as read setting:', e);
-  }
-}
-
-onMounted(async () => {
-  mediaCacheEnabled.value = await isMediaCacheEnabled();
-  await loadSettings();
-});
-
-onUnmounted(() => {
-  if (hoverTimeout) {
-    clearTimeout(hoverTimeout);
-  }
-});
 </script>
 
 <template>
   <div
     :ref="(el) => emit('observeElement', el as Element | null)"
     :data-article-id="article.id"
+    :title="withShortcut(t('article.action.openArticle'), 'openArticle')"
     :class="[
       'article-card',
       article.is_read ? 'read' : '',
@@ -334,7 +245,7 @@ onUnmounted(() => {
             {{ article.translated_title }}
           </h4>
           <div
-            class="text-[9px] sm:text-xs text-text-secondary italic mb-0.5 sm:mb-1 article-title"
+            class="article-original-title sm:text-xs text-text-secondary italic mb-0.5 sm:mb-1 article-title"
           >
             {{ article.title }}
           </div>
@@ -425,7 +336,9 @@ onUnmounted(() => {
               alt="RSSHub"
             />
           </template>
-          <span class="whitespace-nowrap">{{ formatDateWithI18n(article.published_at) }}</span>
+          <span class="whitespace-nowrap" :title="formatArticleDateTime(article.published_at)">{{
+            formatDateWithI18n(article.published_at)
+          }}</span>
         </div>
       </div>
     </div>
@@ -433,6 +346,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+@reference "../../style.css";
 .article-card {
   @apply py-2 px-1.5 sm:p-3 border-b border-border cursor-pointer transition-colors flex gap-2 sm:gap-3 relative border-l-2 sm:border-l-[3px] border-l-transparent;
 }
@@ -485,7 +399,12 @@ onUnmounted(() => {
 
 .article-title.compact-title {
   -webkit-line-clamp: 1;
-  font-size: 0.875rem; /* 14px, smaller than normal */
+  font-size: calc(0.875rem * var(--ui-font-scale, 1)); /* 14px at the default scale */
+}
+
+.article-original-title {
+  font-size: calc(0.5625rem * var(--ui-font-scale, 1));
+  line-height: calc(0.75rem * var(--ui-font-scale, 1));
 }
 
 /* Compact mode: read article title styling */
@@ -555,16 +474,16 @@ onUnmounted(() => {
 
   /* Smaller title font */
   .article-card .article-title {
-    font-size: 0.938rem !important; /* 15px, increased from 14px */
+    font-size: calc(0.938rem * var(--ui-font-scale, 1)) !important;
   }
 
   /* Smaller metadata font */
   .article-card .text-xs {
-    font-size: 0.688rem !important; /* 11px */
+    font-size: calc(0.688rem * var(--ui-font-scale, 1)) !important;
   }
 
   .article-card .text-\[11px\] {
-    font-size: 0.688rem !important; /* 11px */
+    font-size: calc(0.688rem * var(--ui-font-scale, 1)) !important;
   }
 
   /* Tighter spacing */
@@ -575,15 +494,15 @@ onUnmounted(() => {
 
   /* Smaller icon sizes */
   .article-card .text-sm {
-    font-size: 0.75rem !important; /* 12px */
+    font-size: calc(0.75rem * var(--ui-font-scale, 1)) !important;
   }
 
-  .article-card .text-\[9px\] {
-    font-size: 0.563rem !important; /* 9px */
+  .article-card .article-original-title {
+    font-size: calc(0.563rem * var(--ui-font-scale, 1)) !important;
   }
 
   .article-card .text-\[11px\] {
-    font-size: 0.688rem !important; /* 11px */
+    font-size: calc(0.688rem * var(--ui-font-scale, 1)) !important;
   }
 }
 </style>

@@ -7,7 +7,6 @@ import (
 	"strconv"
 
 	"MrRSS/internal/database"
-	"MrRSS/internal/freshrss"
 	"MrRSS/internal/handlers/core"
 	"MrRSS/internal/handlers/response"
 )
@@ -141,8 +140,13 @@ func HandleGetFilterCounts(h *core.Handler, w http.ResponseWriter, r *http.Reque
 // @Failure      500  {object}  map[string]string  "Internal server error"
 // @Router       /articles/mark-all-read [post]
 func HandleMarkAllAsRead(h *core.Handler, w http.ResponseWriter, r *http.Request) {
-	feedIDStr := r.URL.Query().Get("feed_id")
-	category := r.URL.Query().Get("category")
+	query := r.URL.Query()
+	feedIDStr := query.Get("feed_id")
+	categoryValues, hasCategory := query["category"]
+	category := ""
+	if len(categoryValues) > 0 {
+		category = categoryValues[0]
+	}
 
 	var syncReqs []database.SyncRequest
 	var err error
@@ -155,7 +159,7 @@ func HandleMarkAllAsRead(h *core.Handler, w http.ResponseWriter, r *http.Request
 			return
 		}
 		syncReqs, err = h.DB.MarkAllAsReadForFeedWithSync(feedID)
-	} else if category != "" {
+	} else if hasCategory {
 		// Mark all as read for a specific category
 		syncReqs, err = h.DB.MarkAllAsReadForCategoryWithSync(category)
 	} else {
@@ -220,10 +224,10 @@ func HandleRefresh(h *core.Handler, w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, map[string]string{"status": "refreshing"})
 }
 
-// HandleCleanupArticles triggers manual cleanup of articles.
-// This clears ALL articles and article contents, but keeps feeds and settings.
-// @Summary      Cleanup all articles
-// @Description  Delete all articles and article contents (keeps feeds and settings)
+// HandleCleanupArticles triggers manual cleanup of unimportant articles.
+// It preserves read, favorited, and read-later articles and their cached content.
+// @Summary      Cleanup unimportant articles
+// @Description  Delete unread articles that are neither favorited nor saved for later
 // @Tags         articles
 // @Accept       json
 // @Produce      json
@@ -236,29 +240,19 @@ func HandleCleanupArticles(h *core.Handler, w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Manual cleanup: clear ALL articles and article contents, but keep feeds
-	// Step 1: Delete all article contents
-	contentCount, err := h.DB.CleanupAllArticleContents()
+	articleCount, err := h.DB.CleanupUnimportantArticles()
 	if err != nil {
-		log.Printf("Error cleaning up article contents: %v", err)
+		log.Printf("Error cleaning up unimportant articles: %v", err)
 		response.Error(w, err, http.StatusInternalServerError)
 		return
 	}
 
-	// Step 2: Delete all articles (but keep feeds and settings)
-	articleCount, err := h.DB.DeleteAllArticles()
-	if err != nil {
-		log.Printf("Error deleting all articles: %v", err)
-		response.Error(w, err, http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("Manual cleanup: cleared %d article contents and %d articles", contentCount, articleCount)
+	log.Printf("Manual cleanup: deleted %d unimportant articles", articleCount)
 	response.JSON(w, map[string]interface{}{
-		"deleted":  contentCount + articleCount,
+		"deleted":  articleCount,
 		"articles": articleCount,
-		"contents": contentCount,
-		"type":     "all",
+		"contents": int64(0),
+		"type":     "unimportant",
 	})
 }
 
@@ -400,34 +394,7 @@ func HandleMarkRelativeToArticle(h *core.Handler, w http.ResponseWriter, r *http
 
 // performImmediateBulkSync performs immediate sync for multiple articles to FreshRSS in a background goroutine
 func performImmediateBulkSync(h *core.Handler, syncReqs []database.SyncRequest) {
-	// Check if FreshRSS is enabled and configured
-	enabled, _ := h.DB.GetSetting("freshrss_enabled")
-	if enabled != "true" {
-		return
+	for i := range syncReqs {
+		performImmediateSync(h, &syncReqs[i])
 	}
-
-	serverURL, username, password, err := h.DB.GetFreshRSSConfig()
-	if err != nil || serverURL == "" || username == "" || password == "" {
-		log.Printf("[Bulk Sync] FreshRSS not configured, skipping sync")
-		return
-	}
-
-	// Create sync service
-	syncService := freshrss.NewBidirectionalSyncService(serverURL, username, password, h.DB)
-
-	// Perform immediate sync for each article
-	ctx := context.Background()
-	successCount := 0
-	for _, syncReq := range syncReqs {
-		err = syncService.SyncArticleStatus(ctx, syncReq.ArticleID, syncReq.ArticleURL, syncReq.Action)
-		if err != nil {
-			log.Printf("[Bulk Sync] Failed for article %d: %v", syncReq.ArticleID, err)
-			// Enqueue for retry during next global sync
-			_ = h.DB.EnqueueSyncChange(syncReq.ArticleID, syncReq.ArticleURL, syncReq.Action)
-		} else {
-			successCount++
-			log.Printf("[Bulk Sync] Success for article %d: %s", syncReq.ArticleID, syncReq.Action)
-		}
-	}
-	log.Printf("[Bulk Sync] Completed: %d/%d articles synced successfully", successCount, len(syncReqs))
 }

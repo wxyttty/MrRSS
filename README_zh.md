@@ -1,6 +1,6 @@
-# MrRSS
+<h1><img src="imgs/logo-rounded.png" alt="MrRSS logo" style="height: 40px;"/>&nbsp;MrRSS</h1>
 
-<a href="https://trendshift.io/repositories/15731" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15731" alt="WCY-dt%2FMrRSS | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<a href="https://trendshift.io/repositories/15731" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15731" alt="DevXDojo%2FMrRSS | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
 ![Screenshot](imgs/og1.png)
 
@@ -8,9 +8,9 @@
    <a href="README.md">English</a> | <strong>简体中文</strong>
 </p>
 
-[![Version](https://img.shields.io/badge/version-1.3.25-blue.svg)](https://github.com/WCY-dt/MrRSS/releases)
+[![Version](https://img.shields.io/badge/version-1.3.34-blue.svg)](https://github.com/DevXDojo/MrRSS/releases)
 [![License](https://img.shields.io/badge/license-GPLv3-green.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.27+-00ADD8?logo=go)](https://go.dev/)
 [![Wails](https://img.shields.io/badge/Wails-v3%20alpha-red)](https://wails.io/)
 [![Vue.js](https://img.shields.io/badge/Vue.js-3.5+-4FC08D?logo=vue.js)](https://vuejs.org/)
 
@@ -28,7 +28,7 @@
 
 #### 选项 1: 下载预构建安装包（推荐）
 
-从 [Releases](https://github.com/WCY-dt/MrRSS/releases/latest) 页面下载适合您平台的最新安装包。
+从 [Releases](https://github.com/DevXDojo/MrRSS/releases/latest) 页面下载适合您平台的最新安装包。
 
 <details>
 
@@ -68,7 +68,7 @@
 
 在开始之前，请确保已安装以下环境：
 
-- [Go](https://go.dev/) (1.25 或更高版本)
+- [Go](https://go.dev/) (1.27 或更高版本)
 - [Node.js](https://nodejs.org/) (20 LTS 或更高版本，带 npm)
 - [Wails v3](https://v3alpha.wails.io/getting-started/installation/) CLI
 
@@ -90,7 +90,7 @@ sudo apt-get install libgtk-4-dev libwebkitgtk-6.0-dev libsoup-3.0-dev gcc pkg-c
 1. **克隆仓库**
 
    ```bash
-   git clone https://github.com/WCY-dt/MrRSS.git
+   git clone https://github.com/DevXDojo/MrRSS.git
    cd MrRSS
    ```
 
@@ -215,7 +215,10 @@ pre-commit run --all-files
 make test
 ```
 
-### 服务器模式（仅限 API）
+### 本地 API 与服务器模式
+
+桌面应用运行时会在 `http://localhost:1234/api` 提供 REST API。该监听器仅允许
+本机访问。
 
 对于服务器部署和 API 集成，请使用无界面服务器版本：
 
@@ -231,8 +234,8 @@ go build -tags server -o mrrss-server .
 本项目也提供了基于 ghcr.io 的预构建服务器镜像：
 
 ```bash
-docker run -d -p 1234:1234 ghcr.io/wcy-dt/mrrss:latest-amd64
-docker run -d -p 1234:1234 ghcr.io/wcy-dt/mrrss:latest-arm64
+docker run -d -p 1234:1234 ghcr.io/devxdojo/mrrss:latest-amd64
+docker run -d -p 1234:1234 ghcr.io/devxdojo/mrrss:latest-arm64
 ```
 
 请参阅[服务器模式 API 文档](docs/SERVER_MODE/swagger.json)以获取完整的 API 参考。
@@ -274,11 +277,9 @@ docker run -d -p 1234:1234 ghcr.io/wcy-dt/mrrss:latest-arm64
 
 ## 📮 联系与支持
 
-- **Issues**: [GitHub Issues](https://github.com/WCY-dt/MrRSS/issues)
-- **讨论**: [GitHub Discussions](https://github.com/WCY-dt/MrRSS/discussions)
-- **仓库**: [github.com/WCY-dt/MrRSS](https://github.com/WCY-dt/MrRSS)
-
----
+- **Issues**: [GitHub Issues](https://github.com/DevXDojo/MrRSS/issues)
+- **讨论**: [GitHub Discussions](https://github.com/DevXDojo/MrRSS/discussions)
+- **仓库**: [github.com/DevXDojo/MrRSS](https://github.com/DevXDojo/MrRSS)
 
 <div align="center">
   <img src="imgs/sponsor.png" alt="Sponsor MrRSS"/>

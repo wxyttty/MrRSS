@@ -14,8 +14,8 @@ const emit = defineEmits<{
 const { t } = useI18n();
 
 const logicOptions: Array<{ value: 'and' | 'or'; labelKey: string }> = [
-  { value: 'and', labelKey: 'and' },
-  { value: 'or', labelKey: 'or' },
+  { value: 'and', labelKey: 'modal.filter.and' },
+  { value: 'or', labelKey: 'modal.filter.or' },
 ];
 </script>
 
@@ -37,6 +37,7 @@ const logicOptions: Array<{ value: 'and' | 'or'; labelKey: string }> = [
 </template>
 
 <style scoped>
+@reference "../../../style.css";
 .logic-connector {
   @apply flex items-center gap-1 bg-bg-tertiary rounded-full p-1;
 }

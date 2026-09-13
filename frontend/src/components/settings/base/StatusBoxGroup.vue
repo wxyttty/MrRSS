@@ -54,7 +54,7 @@ defineOptions({
             class="sm:w-5 sm:h-5"
             :class="{ 'animate-spin': actionButton.loading }"
           />
-          <span>{{ actionButton.loading ? '...' : actionButton.label }}</span>
+          <span>{{ actionButton.label }}</span>
         </button>
       </div>
 
@@ -77,7 +77,7 @@ defineOptions({
 </template>
 
 <style scoped>
-@import '../styles.css';
+@reference "../../../style.css";
 
 @keyframes spin {
   from {
