@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strings"
@@ -294,17 +295,33 @@ func (c *Client) GetStarredArticles(ctx context.Context, maxItems int) ([]Articl
 	return result.Items, nil
 }
 
-// GetReadArticles retrieves recently read articles
+// GetReadArticles retrieves recently read articles.
+//
+// FreshRSS does NOT support `user/-/state/com.google/read` as a stream path for
+// `/reader/api/0/stream/contents/` (returns 400 Bad Request). Instead, we fetch
+// the `reading-list` stream WITHOUT the `xt=user/-/state/com.google/read` exclude
+// filter (so it returns both read AND unread articles) and then filter client-side
+// to only those items whose `categories` array contains `user/-/state/com.google/read`.
+// This matches FreshRSS's intended API usage: state tags are carried in each item's
+// `categories` field, not as a standalone stream target.
 func (c *Client) GetReadArticles(ctx context.Context, maxItems int) ([]Article, error) {
-	result, err := c.GetStreamContents(ctx, "user/-/state/com.google/read", nil, maxItems, "")
+	result, err := c.GetStreamContents(ctx, "user/-/state/com.google/reading-list", nil, maxItems, "")
 	if err != nil {
 		return nil, err
 	}
-	return result.Items, nil
+	readArticles := make([]Article, 0, len(result.Items))
+	for _, item := range result.Items {
+		if isReadArticle(item.Categories) {
+			readArticles = append(readArticles, item)
+		}
+	}
+	return readArticles, nil
 }
 
 // GetStreamContents retrieves articles from a specific stream with optional filtering
-// streamID: e.g., "user/-/state/com.google/read", "user/-/state/com.google/starred", "feed/http://..."
+// streamID: e.g., "user/-/state/com.google/reading-list", "user/-/state/com.google/starred", "feed/http://..."
+//   - NOTE: FreshRSS does NOT support "user/-/state/com.google/read" as a stream path
+//     (returns 400). To get read articles, fetch "reading-list" and filter by categories.
 // excludeTypes: list of states to exclude, e.g., ["user/-/state/com.google/read"]
 // maxItems: maximum number of items to retrieve
 // continuationToken: token for pagination (empty for first request)
@@ -386,7 +403,7 @@ func (c *Client) GetStreamContents(ctx context.Context, streamID string, exclude
 		}
 
 		articles = append(articles, Article{
-			ID:             item.ID,
+			ID:             normalizeItemID(item.ID),
 			Title:          item.Title,
 			URL:            articleURL,
 			Content:        item.Summary.Content,
@@ -411,6 +428,76 @@ const (
 	TagStarred = "user/-/state/com.google/starred"
 )
 
+// isReadArticle reports whether the given category list marks the article as read.
+// FreshRSS carries read state in each item's `categories` array (not as a stream).
+func isReadArticle(categories []string) bool {
+	for _, cat := range categories {
+		if cat == TagRead {
+			return true
+		}
+	}
+	return false
+}
+
+// itemIDHexPrefix is the prefix used by the Google Reader API (and FreshRSS) for item
+// identifiers in stream-contents responses. The remainder is a 16-character zero-padded
+// hexadecimal representation of the 64-bit entry id.
+const itemIDHexPrefix = "tag:google.com,2005:reader/item/"
+
+// normalizeItemID converts a Google Reader item id into a pure decimal string that
+// FreshRSS's `editTag` endpoint accepts verbatim (without invoking its buggy `hex2dec`,
+// which loses precision on 64-bit PHP and emits scientific notation that PostgreSQL
+// rejects with SQLSTATE 22P02).
+//
+// Input forms accepted:
+//   - "tag:google.com,2005:reader/item/000000153e4a0abd" (hex form from stream contents)
+//   - "153e4a0abd" (hex without prefix)
+//   - "9187201950435737471" (already decimal — returned unchanged)
+//
+// IDs use the full 64-bit range (max 0xffffffffffffffff = 18446744073709551615, which
+// exceeds int64 max), so conversion is done with math/big to avoid float/int overflow.
+func normalizeItemID(id string) string {
+	if id == "" {
+		return ""
+	}
+	// Already a pure decimal string (no leading zero, unless it is literally "0").
+	if isAllDigits(id) && (id == "0" || id[0] != '0') {
+		return id
+	}
+	// Strip the Google Reader prefix if present, leaving a bare hex string.
+	hexStr := id
+	if strings.HasPrefix(id, itemIDHexPrefix) {
+		hexStr = strings.TrimPrefix(id, itemIDHexPrefix)
+	}
+	// FreshRSS also supports a shorter `i` parameter; take only the basename
+	// in case a trailing path segment slipped in.
+	if idx := strings.LastIndex(hexStr, "/"); idx >= 0 {
+		hexStr = hexStr[idx+1:]
+	}
+	if hexStr == "" {
+		return id
+	}
+	n := new(big.Int)
+	_, ok := n.SetString(hexStr, 16)
+	if !ok {
+		// Not valid hex either; leave untouched and let the server decide.
+		return id
+	}
+	return n.Text(10)
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // editTag is a helper function to add or remove tags from items
 func (c *Client) editTag(ctx context.Context, itemIDs []string, addTag string, removeTag string) error {
 	if c.authToken == "" {
@@ -429,9 +516,12 @@ func (c *Client) editTag(ctx context.Context, itemIDs []string, addTag string, r
 	data := url.Values{}
 	data.Set("T", token)
 
-	// Add all item IDs - Google Reader API supports multiple i parameters
+	// Add all item IDs - Google Reader API supports multiple i parameters.
+	// Normalize each ID to a pure decimal string so FreshRSS skips its buggy
+	// hex2dec() call (which loses precision on 64-bit PHP and emits scientific
+	// notation that PostgreSQL rejects with SQLSTATE 22P02).
 	for _, id := range itemIDs {
-		data.Add("i", id)
+		data.Add("i", normalizeItemID(id))
 	}
 
 	// Add tag if specified

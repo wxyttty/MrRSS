@@ -255,8 +255,12 @@ func (s *BidirectionalSyncService) pullFromServer(ctx context.Context) (int, err
 		log.Printf("Applied starred status to %d articles from server", len(starredArticles))
 	}
 
-	// Step 4: Apply read status from server using unread count API (fetch all with pagination)
-	log.Printf("pullFromServer: Step 4 - Applying read status using unread count API")
+	// Step 4: Apply read status from server.
+	// FreshRSS does NOT support `user/-/state/com.google/read` as a stream path for
+	// `/reader/api/0/stream/contents/` (returns 400 Bad Request). Instead, fetch the
+	// `reading-list` stream (which returns both read AND unread articles) and filter
+	// client-side to items whose `categories` array contains `user/-/state/com.google/read`.
+	log.Printf("pullFromServer: Step 4 - Applying read status from reading-list")
 
 	// First, get unread counts from server to verify sync
 	unreadCounts, err := s.client.GetUnreadCount(ctx)
@@ -271,18 +275,25 @@ func (s *BidirectionalSyncService) pullFromServer(ctx context.Context) (int, err
 		}
 	}
 
-	// Fetch all read articles using pagination
-	readArticles, err := s.fetchAllArticles(ctx, "user/-/state/com.google/read", 10000)
+	// Fetch all articles from reading-list (read + unread) and filter to read ones.
+	allReadingListArticles, err := s.fetchAllArticles(ctx, "user/-/state/com.google/reading-list", 10000)
 	if err != nil {
-		log.Printf("Warning: Failed to get read articles: %v", err)
+		log.Printf("Warning: Failed to get reading-list articles: %v", err)
 	} else {
+		readArticles := make([]Article, 0, len(allReadingListArticles))
+		for _, article := range allReadingListArticles {
+			if isReadArticle(article.Categories) {
+				readArticles = append(readArticles, article)
+			}
+		}
 		for _, article := range readArticles {
 			_, err := s.applyServerStatus(article.URL, true, "is_read")
 			if err != nil {
 				log.Printf("Warning: Failed to apply read status for %s: %v", article.URL, err)
 			}
 		}
-		log.Printf("Applied read status to %d articles from server", len(readArticles))
+		log.Printf("Applied read status to %d articles from server (of %d reading-list items)",
+			len(readArticles), len(allReadingListArticles))
 	}
 
 	log.Printf("Pull from server: %d total changes applied", totalChanges)
@@ -870,15 +881,21 @@ func (s *BidirectionalSyncService) pushToServer(ctx context.Context) (int, error
 	remoteReadArticles := make(map[string]bool)    // URL -> is read
 	remoteStarredArticles := make(map[string]bool) // URL -> is starred
 
-	// Fetch remote read status (fetch all with pagination)
-	readArticles, err := s.fetchAllArticles(ctx, "user/-/state/com.google/read", 10000)
+	// Fetch remote read status. FreshRSS does NOT support `user/-/state/com.google/read`
+	// as a stream path for `/reader/api/0/stream/contents/` (returns 400). Instead,
+	// fetch the `reading-list` stream (read + unread) and filter client-side to items
+	// whose `categories` contains `user/-/state/com.google/read`.
+	allReadingListArticles, err := s.fetchAllArticles(ctx, "user/-/state/com.google/reading-list", 10000)
 	if err != nil {
-		log.Printf("[Push] Warning: Failed to get remote read articles: %v", err)
+		log.Printf("[Push] Warning: Failed to get reading-list articles: %v", err)
 	} else {
-		for _, article := range readArticles {
-			remoteReadArticles[article.URL] = true
+		for _, article := range allReadingListArticles {
+			if isReadArticle(article.Categories) {
+				remoteReadArticles[article.URL] = true
+			}
 		}
-		log.Printf("[Push] Fetched %d read articles from remote", len(remoteReadArticles))
+		log.Printf("[Push] Fetched %d read articles from remote (of %d reading-list items)",
+			len(remoteReadArticles), len(allReadingListArticles))
 	}
 
 	// Fetch remote starred status (fetch all with pagination)
