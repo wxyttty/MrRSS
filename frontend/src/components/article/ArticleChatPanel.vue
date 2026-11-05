@@ -18,6 +18,7 @@ import {
 } from '@phosphor-icons/vue';
 import type { Article } from '@/types/models';
 import { readAIError } from '@/utils/aiError';
+import { sanitizeArticleHTML } from '@/utils/articleHtml';
 import { copyToClipboard } from '@/utils/clipboard';
 import { useAIProfiles } from '@/composables/ai/useAIProfiles';
 import BaseSelect from '@/components/common/BaseSelect.vue';
@@ -218,6 +219,7 @@ const questionPrompts = computed(() => [
   t('article.chat.promptExplain'),
   t('article.chat.promptAnalyze'),
   t('article.chat.promptVerify'),
+  t('article.chat.promptEvidence'),
 ]);
 
 const customPrompts = computed<string[]>(() => {
@@ -923,7 +925,7 @@ const currentSessionTitle = computed(() => {
                 <div
                   v-if="msg.role === 'assistant' && msg.html"
                   class="prose prose-sm max-w-none"
-                  v-html="msg.html"
+                  v-html="sanitizeArticleHTML(msg.html)"
                 ></div>
                 <div v-else class="whitespace-pre-wrap break-words">{{ msg.content }}</div>
               </div>

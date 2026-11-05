@@ -13,6 +13,30 @@ var markdownBlock = regexp.MustCompile("(?m)^ {0,3}(#{1,6} |```|~~~|[-*+] |[0-9]
 var rasterDataImage = regexp.MustCompile(`(?i)^data:image/(png|gif|jpeg|webp|avif);base64,[a-z0-9+/=\r\n]+$`)
 var htmlElement = regexp.MustCompile(`(?i)<[a-z][a-z0-9]*(?:\s|/?>)`)
 
+// ResolveArticleImageSource selects the first valid HTTP(S) image source.
+// Attribute names must be lowercase and values must already be HTML-decoded.
+// Inline images are left to the caller, which can preserve the existing src.
+func ResolveArticleImageSource(attributes map[string]string, base *url.URL) string {
+	for _, key := range []string{"data-src", "data-original", "data-lazy-src", "data-actualsrc", "data-original-src", "zoomfile", "file", "src"} {
+		value := strings.TrimSpace(attributes[key])
+		if value == "" || strings.HasPrefix(value, "#") {
+			continue
+		}
+		source, err := url.Parse(value)
+		if err != nil {
+			continue
+		}
+		if base != nil {
+			source = base.ResolveReference(source)
+		}
+		if (source.Scheme != "http" && source.Scheme != "https") || source.Hostname() == "" {
+			continue
+		}
+		return source.String()
+	}
+	return ""
+}
+
 // PrepareArticleContent renders Markdown sources and normalizes safe reader HTML.
 // Existing HTML and pre/code examples remain HTML rather than being reinterpreted.
 func PrepareArticleContent(content, baseURL string) string {
@@ -23,17 +47,29 @@ func PrepareArticleContent(content, baseURL string) string {
 	if err != nil {
 		return ""
 	}
-	doc.Find("script,style,link,meta,base,object,embed,form,input,button,textarea,select,svg,template").Remove()
-	// Promote lazy image URLs in RSS HTML too, before removing source attributes.
-	doc.Find("img").Each(func(_ int, image *goquery.Selection) {
-		for _, key := range []string{"data-src", "data-original", "data-lazy-src", "data-actualsrc"} {
-			if value := strings.TrimSpace(image.AttrOr(key, "")); value != "" {
-				image.SetAttr("src", value)
-				break
-			}
+	// Drop raw-text and foreign-content containers before serialization. In
+	// particular, noscript parses differently in browser templates and must
+	// never carry hidden markup through a second parse (GHSA-8q87-xm7v-xv7q).
+	doc.Find("script,style,link,meta,base,object,embed,form,input,button,textarea,select,svg,template,noscript,noembed,noframes,plaintext,xmp,title,annotation-xml").Remove()
+	doc.Find("*").Each(func(_ int, sel *goquery.Selection) {
+		if !safeArticleElements[sel.Get(0).Data] {
+			// Preserve text and ordinary descendants in custom feed wrappers.
+			sel.ReplaceWithSelection(sel.Contents())
 		}
 	})
 	base, _ := url.Parse(baseURL)
+	// Promote lazy image URLs in RSS HTML too, before removing source attributes.
+	doc.Find("img").Each(func(_ int, image *goquery.Selection) {
+		attributes := make(map[string]string, len(image.Get(0).Attr))
+		for _, attr := range image.Get(0).Attr {
+			if attr.Namespace == "" {
+				attributes[strings.ToLower(attr.Key)] = attr.Val
+			}
+		}
+		if source := ResolveArticleImageSource(attributes, base); source != "" {
+			image.SetAttr("src", source)
+		}
+	})
 	doc.Find("*").Each(func(_ int, sel *goquery.Selection) {
 		node := sel.Get(0)
 		if node.Type != html.ElementNode {
@@ -87,6 +123,11 @@ func PrepareArticleContent(content, baseURL string) string {
 			attrs = append(attrs, attr)
 		}
 		node.Attr = attrs
+		if node.Data == "img" {
+			// Reader images must not leak the app origin, even when feeds omit
+			// a policy. Hotlink-protected hosts often reject wails.localhost.
+			sel.SetAttr("referrerpolicy", "no-referrer")
+		}
 		if node.Data == "iframe" {
 			source, _ := url.Parse(sel.AttrOr("src", ""))
 			if source == nil || !allowedEmbedHost(source.Hostname()) {
@@ -100,6 +141,17 @@ func PrepareArticleContent(content, baseURL string) string {
 	result, _ := doc.Find("body").Html()
 	return strings.TrimSpace(result)
 }
+
+// Keep the element policy explicit as well as the attribute policy below it.
+// MathML is limited to presentation elements; integration points and embedded
+// HTML/XML are excluded so reparsing cannot change the security boundary.
+var safeArticleElements = func() map[string]bool {
+	allowed := make(map[string]bool)
+	for _, tag := range strings.Fields(`html head body a abbr address article aside b bdi bdo blockquote br caption cite code col colgroup dd del details dfn div dl dt em figcaption figure footer h1 h2 h3 h4 h5 h6 header hgroup hr i img ins kbd li main mark nav ol p picture pre q rp rt ruby s samp section small source span strong sub summary sup table tbody td tfoot th thead time tr u ul var video audio track iframe math mi mn mo ms mtext mrow mfrac msqrt mroot mstyle merror mpadded mphantom mfenced menclose msub msup msubsup munder mover munderover mmultiscripts mprescripts mtable mtr mtd mspace semantics annotation`) {
+		allowed[tag] = true
+	}
+	return allowed
+}()
 
 func allowedEmbedHost(host string) bool {
 	for _, allowed := range []string{"youtube.com", "youtube-nocookie.com", "player.vimeo.com", "player.bilibili.com"} {

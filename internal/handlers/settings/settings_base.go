@@ -17,6 +17,7 @@ type SettingDef struct {
 // AllSettings returns all setting definitions in alphabetical order by key.
 // This is the single source of truth for all settings.
 var AllSettings = []SettingDef{
+	{Key: "ads_snoozed_until", Encrypted: false},
 	{Key: "ai_api_key", Encrypted: true},
 	{Key: "ai_chat_enabled", Encrypted: false},
 	{Key: "ai_chat_profile_id", Encrypted: false},
@@ -57,6 +58,7 @@ var AllSettings = []SettingDef{
 	{Key: "custom_translation_name", Encrypted: false},
 	{Key: "custom_translation_response_path", Encrypted: false},
 	{Key: "custom_translation_timeout", Encrypted: false},
+	{Key: "data_directory", Encrypted: false},
 	{Key: "date_format", Encrypted: false},
 	{Key: "deepl_api_key", Encrypted: true},
 	{Key: "deepl_endpoint", Encrypted: false},
@@ -134,6 +136,7 @@ var AllSettings = []SettingDef{
 	{Key: "siyuan_endpoint", Encrypted: false},
 	{Key: "siyuan_folder", Encrypted: false},
 	{Key: "siyuan_notebook_id", Encrypted: false},
+	{Key: "startup_minimized", Encrypted: false},
 	{Key: "startup_on_boot", Encrypted: false},
 	{Key: "summary_enabled", Encrypted: false},
 	{Key: "summary_length", Encrypted: false},

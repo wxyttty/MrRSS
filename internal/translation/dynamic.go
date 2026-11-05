@@ -49,6 +49,28 @@ func (t *DynamicTranslator) Translate(text, targetLang string) (string, error) {
 	return t.TranslateContext(context.Background(), text, targetLang)
 }
 
+// LookupCachedTranslation reads the configured provider's cache without sending a request.
+func (t *DynamicTranslator) LookupCachedTranslation(ctx context.Context, text, targetLang string) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	provider, err := t.getProvider()
+	if err != nil {
+		return "", false, err
+	}
+	// Local conversions remain available while upstream requests are cooling
+	// down, even if this text has never been cached.
+	if provider.Name() == ProviderGoogle.String() {
+		if converted, handled, err := convertChineseScript(text, targetLang); handled {
+			return converted, err == nil, err
+		}
+	}
+	if t.cache == nil {
+		return "", false, nil
+	}
+	return t.cache.GetCachedTranslation(hashText(text), targetLang, provider.Name())
+}
+
 func (t *DynamicTranslator) TranslateContext(ctx context.Context, text, targetLang string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -60,6 +82,12 @@ func (t *DynamicTranslator) TranslateContext(ctx context.Context, text, targetLa
 	provider, err := t.getProvider()
 	if err != nil {
 		return "", err
+	}
+	// Prefer deterministic local conversion to old Google cache entries.
+	if provider.Name() == ProviderGoogle.String() {
+		if converted, handled, err := convertChineseScript(text, targetLang); handled {
+			return converted, err
+		}
 	}
 
 	// Wrap with caching if cache is available

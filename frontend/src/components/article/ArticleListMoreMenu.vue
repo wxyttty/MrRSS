@@ -7,6 +7,8 @@ import {
   PhCaretRight,
   PhSortAscending,
   PhSortDescending,
+  PhSparkle,
+  PhCheckSquare,
 } from '@phosphor-icons/vue';
 import type { ArticleSortOrder } from '@/stores/app';
 import type { ArticleGroupBy } from '@/utils/articleGrouping';
@@ -15,11 +17,16 @@ const props = defineProps<{
   sortOrder: ArticleSortOrder;
   groupBy: ArticleGroupBy;
   filterCount: number;
+  reportDisabled?: boolean;
+  selectionDisabled?: boolean;
+  selectionActive?: boolean;
 }>();
 const emit = defineEmits<{
   sort: [value: ArticleSortOrder];
   group: [value: ArticleGroupBy];
   filter: [];
+  report: [];
+  select: [];
 }>();
 const { t } = useI18n();
 const id = useId();
@@ -187,6 +194,36 @@ onBeforeUnmount(() => {
           </fieldset>
         </div>
         <div class="border-t border-border p-1.5">
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm transition-colors hover:bg-bg-tertiary disabled:cursor-not-allowed disabled:opacity-50"
+            :disabled="selectionDisabled"
+            @click="
+              close();
+              emit('select');
+            "
+          >
+            <PhCheckSquare
+              :size="16"
+              :weight="selectionActive ? 'fill' : 'regular'"
+              :class="selectionActive ? 'text-accent' : 'text-text-secondary'"
+            />
+            <span class="flex-1">{{ t('article.action.selectArticles') }}</span>
+            <PhCaretRight :size="14" class="text-text-secondary" />
+          </button>
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm transition-colors hover:bg-bg-tertiary disabled:opacity-50 disabled:cursor-not-allowed"
+            :disabled="reportDisabled"
+            @click="
+              close();
+              emit('report');
+            "
+          >
+            <PhSparkle :size="16" class="text-accent" />
+            <span class="flex-1">{{ t('article.report.title') }}</span>
+            <PhCaretRight :size="14" class="text-text-secondary" />
+          </button>
           <button
             type="button"
             class="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm transition-colors hover:bg-bg-tertiary focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"

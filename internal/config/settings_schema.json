@@ -4,6 +4,20 @@
     "description": "Settings schema definition - add new settings here only!"
   },
   "settings": {
+    "ads_snoozed_until": {
+      "type": "string",
+      "default": "0",
+      "category": "internal",
+      "encrypted": false,
+      "frontend_key": "ads_snoozed_until"
+    },
+    "data_directory": {
+      "type": "string",
+      "default": "",
+      "category": "general",
+      "encrypted": false,
+      "frontend_key": "data_directory"
+    },
     "update_interval": {
       "type": "int",
       "default": 30,
@@ -52,6 +66,13 @@
       "category": "general",
       "encrypted": false,
       "frontend_key": "startupOnBoot"
+    },
+    "startup_minimized": {
+      "type": "bool",
+      "default": false,
+      "category": "general",
+      "encrypted": false,
+      "frontend_key": "startupMinimized"
     },
     "close_to_tray": {
       "type": "bool",

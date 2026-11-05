@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { useAppStore } from '@/stores/app';
+import { useAdvertisementsStore } from '@/stores/advertisements';
+import PartnerAdvertisement from '@/components/common/PartnerAdvertisement.vue';
 import { useI18n } from 'vue-i18n';
 import { computed, nextTick, ref, onMounted, watch, type Component, type Ref } from 'vue';
 import GeneralTab from './settings/general/GeneralTab.vue';
@@ -36,9 +38,11 @@ import { useSettings } from '@/composables/core/useSettings';
 import { useAppUpdates } from '@/composables/core/useAppUpdates';
 import { useFeedManagement } from '@/composables/feed/useFeedManagement';
 import { useModalClose, LARGE_MODAL_Z_INDEX } from '@/composables/ui/useModalClose';
+import { settingsSearchKeys } from '@/config/settingsSearch';
 
 const store = useAppStore();
-const { t, tm } = useI18n();
+const advertisements = useAdvertisementsStore();
+const { t } = useI18n();
 
 interface Props {
   initialTab?: TabName;
@@ -96,80 +100,61 @@ const settingsTabs: Array<{
   id: TabName;
   icon: Component;
   labelKey: string;
-  searchNamespaces: string[];
 }> = [
   {
     id: 'general',
     icon: PhSlidersHorizontal,
     labelKey: 'setting.tab.general',
-    searchNamespaces: ['setting.general', 'setting.update', 'setting.database'],
   },
   {
     id: 'reading',
     icon: PhBookOpen,
     labelKey: 'setting.tab.readingAndDisplay',
-    searchNamespaces: ['setting.reading', 'setting.typography', 'setting.customization'],
   },
   {
     id: 'feeds',
     icon: PhRss,
     labelKey: 'sidebar.feedList.feeds',
-    searchNamespaces: ['setting.feed', 'modal.feed', 'modal.discovery'],
   },
   {
     id: 'content',
     icon: PhTextT,
     labelKey: 'setting.tab.content',
-    searchNamespaces: ['setting.content', 'setting.translation'],
   },
   {
     id: 'ai',
     icon: PhBrain,
     labelKey: 'setting.tab.ai',
-    searchNamespaces: ['setting.ai', 'aiErrors'],
   },
   {
     id: 'rules',
     icon: PhFunnel,
     labelKey: 'modal.rule.rules',
-    searchNamespaces: ['setting.rule', 'modal.rule'],
   },
   {
     id: 'network',
     icon: PhGlobe,
     labelKey: 'setting.tab.network',
-    searchNamespaces: ['setting.network'],
   },
   {
     id: 'plugins',
     icon: PhPuzzlePiece,
     labelKey: 'setting.tab.plugins',
-    searchNamespaces: [
-      'setting.plugins',
-      'setting.freshrss',
-      'setting.rsshub',
-      'setting.notion',
-      'setting.obsidian',
-      'setting.zotero',
-    ],
   },
   {
     id: 'shortcuts',
     icon: PhKeyboard,
     labelKey: 'setting.shortcut.shortcuts',
-    searchNamespaces: ['setting.shortcut'],
   },
   {
     id: 'statistics',
     icon: PhChartBar,
     labelKey: 'setting.statistic.statistics',
-    searchNamespaces: ['setting.statistic'],
   },
   {
     id: 'about',
     icon: PhInfo,
     labelKey: 'setting.tab.about',
-    searchNamespaces: ['setting.about', 'setting.update'],
   },
 ];
 
@@ -178,15 +163,6 @@ interface SettingsSearchResult {
   tab: TabName;
   tabLabel: string;
   label: string;
-}
-
-function collectSearchText(value: unknown): string[] {
-  if (typeof value === 'string') return [value];
-  if (Array.isArray(value)) return value.flatMap(collectSearchText);
-  if (value && typeof value === 'object') {
-    return Object.values(value as Record<string, unknown>).flatMap(collectSearchText);
-  }
-  return [];
 }
 
 const settingsSearchResults = computed<SettingsSearchResult[]>(() => {
@@ -198,10 +174,7 @@ const settingsSearchResults = computed<SettingsSearchResult[]>(() => {
 
   for (const tab of settingsTabs) {
     const tabLabel = t(tab.labelKey);
-    const searchableText = [
-      tabLabel,
-      ...tab.searchNamespaces.flatMap((namespace) => collectSearchText(tm(namespace))),
-    ];
+    const searchableText = [tabLabel, ...settingsSearchKeys[tab.id].map((key) => t(key))];
 
     for (const text of searchableText) {
       const label = text.trim().replace(/\s+/g, ' ');
@@ -226,9 +199,11 @@ const settingsSearchResults = computed<SettingsSearchResult[]>(() => {
     .map(({ rank: _rank, ...result }) => result);
 });
 
-function selectSettingsTab(tab: TabName) {
+async function selectSettingsTab(tab: TabName) {
   activeTab.value = tab;
   clearSettingsSearch();
+  await nextTick();
+  settingsContentRef.value?.scrollTo({ top: 0, behavior: 'instant' });
 }
 
 async function selectSettingsSearchResult(result: SettingsSearchResult) {
@@ -438,6 +413,9 @@ function handleDiscoverAll() {
           class="settings-content flex-1 overflow-y-scroll p-3 sm:p-6 min-h-0 scroll-smooth overscroll-contain"
           data-settings-content
         >
+          <div v-if="advertisements.visibleAds.length" class="mb-4 space-y-4 sm:mb-6 sm:space-y-6">
+            <PartnerAdvertisement v-for="ad in advertisements.visibleAds" :key="ad.id" :ad="ad" />
+          </div>
           <GeneralTab
             v-if="activeTab === 'general'"
             :settings="settings"

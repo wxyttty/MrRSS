@@ -40,6 +40,47 @@ function Invoke-CheckedCommand {
     return $output
 }
 
+function Invoke-GitRemoteCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    $maximumAttempts = 3
+    $effectiveArguments = $Arguments
+    for ($attempt = 1; $attempt -le $maximumAttempts; $attempt++) {
+        try {
+            return Invoke-CheckedCommand -Command 'git' -Arguments $effectiveArguments
+        }
+        catch {
+            $details = $_.Exception.Message
+            # Retry transport failures only. Authentication, certificate validation,
+            # missing repositories and non-fast-forward failures need user action.
+            $transientError = $details -match (
+                '(?i)unexpected eof|SSL_ERROR_SYSCALL|connection (?:reset|timed out|refused)|' +
+                'could not resolve (?:host|proxy)|failed to connect|' +
+                'operation timed out|HTTP/2 (?:stream|framing)|' +
+                'curl (?:16|18|28|52|55|56|92)\b|remote end hung up unexpectedly'
+            )
+            if (-not $transientError) {
+                throw
+            }
+            if ($attempt -eq $maximumAttempts) {
+                throw "Git 远程操作尝试 $maximumAttempts 次后仍失败。请检查网络或代理后重新运行脚本以继续发布。`n$details"
+            }
+
+            # Scope the protocol fallback to this command; preserve TLS validation
+            # and the user's repository/global Git configuration.
+            if ($details -match '(?i)unexpected eof|SSL_ERROR_SYSCALL|HTTP/2|curl (?:16|92)\b') {
+                $effectiveArguments = @('-c', 'http.version=HTTP/1.1') + $Arguments
+            }
+            $protocolHint = if ($effectiveArguments[0] -eq '-c') { '（使用 HTTP/1.1）' } else { '' }
+            Write-Warning "Git 远程操作遇到网络错误，$attempt 秒后重试$protocolHint（$($attempt + 1)/$maximumAttempts）：git $($Arguments -join ' ')"
+            Start-Sleep -Seconds $attempt
+        }
+    }
+}
+
 function ConvertFrom-CommandJson {
     param(
         [Parameter(Mandatory = $true)]
@@ -222,6 +263,10 @@ function Update-VersionReferences {
         if ($fileName -match '(?i)^CHANGELOG(?:\.|$)') {
             continue
         }
+        # Test versions are fixtures, not application release metadata.
+        if ($fileName -match '(?i)(?:_test\.go$|\.(?:test|spec)\.[^.]+$)') {
+            continue
+        }
 
         $file = Read-TextFile -Path $relativePath
         $updatedContent = $file.Content
@@ -395,7 +440,7 @@ try {
         $releaseBranch = $startingBranch
         $newVersion = $releaseBranchMatch.Groups['version'].Value
 
-        Invoke-CheckedCommand -Command 'git' -Arguments @('fetch', 'origin', 'main') | Out-Null
+        Invoke-GitRemoteCommand -Arguments @('fetch', 'origin', 'main') | Out-Null
         $oldVersion = Get-VersionFromGitReference -Reference 'origin/main' -Path $versionFile
         $expectedVersion = Get-NextPatchVersion -Version $oldVersion
         if ($newVersion -ne $expectedVersion) {
@@ -407,18 +452,18 @@ try {
         }
 
         $remoteBranch = @(
-            Invoke-CheckedCommand -Command 'git' -Arguments @('ls-remote', '--heads', 'origin', $releaseBranch)
+            Invoke-GitRemoteCommand -Arguments @('ls-remote', '--heads', 'origin', $releaseBranch)
         )
         $remoteBranchExists = $remoteBranch.Count -gt 0
         if ($remoteBranchExists -and $workingTreeStatus.Count -eq 0) {
-            Invoke-CheckedCommand -Command 'git' -Arguments @(
+            Invoke-GitRemoteCommand -Arguments @(
                 'pull', '--ff-only', 'origin', $releaseBranch
             ) | Out-Null
         }
     }
     else {
         Invoke-CheckedCommand -Command 'git' -Arguments @('checkout', 'main') | Out-Null
-        Invoke-CheckedCommand -Command 'git' -Arguments @('pull', '--ff-only', 'origin', 'main') | Out-Null
+        Invoke-GitRemoteCommand -Arguments @('pull', '--ff-only', 'origin', 'main') | Out-Null
 
         $oldVersion = Get-VersionFromFile -Path $versionFile
         $newVersion = Get-NextPatchVersion -Version $oldVersion
@@ -429,14 +474,14 @@ try {
         )
         $releaseBranchExists = $localBranch.Count -gt 0
         $remoteBranch = @(
-            Invoke-CheckedCommand -Command 'git' -Arguments @('ls-remote', '--heads', 'origin', $releaseBranch)
+            Invoke-GitRemoteCommand -Arguments @('ls-remote', '--heads', 'origin', $releaseBranch)
         )
         $remoteBranchExists = $remoteBranch.Count -gt 0
 
         if ($releaseBranchExists) {
             Invoke-CheckedCommand -Command 'git' -Arguments @('checkout', $releaseBranch) | Out-Null
             if ($remoteBranchExists) {
-                Invoke-CheckedCommand -Command 'git' -Arguments @(
+                Invoke-GitRemoteCommand -Arguments @(
                     'pull', '--ff-only', 'origin', $releaseBranch
                 ) | Out-Null
             }
@@ -585,7 +630,7 @@ try {
     else {
         Write-Host '发布改动已经提交，跳过重复 commit。' -ForegroundColor Green
     }
-    Invoke-CheckedCommand -Command 'git' -Arguments @(
+    Invoke-GitRemoteCommand -Arguments @(
         'push', '--set-upstream', 'origin', $releaseBranch
     ) | Out-Null
 
@@ -672,18 +717,23 @@ try {
 1. 先帮我检查 GitHub 上现有的 PR（$pullRequestText），并将它们合并进入 $releaseBranch 分支（注意不要默认合并进 main）：
    - 如果是 dependabot 的 PR，需要确认自动化 check 通过。对于未通过的，需要进行修改，直至其通过。
    - 对于其他 PR，需要检查自动化 check 是否通过、功能实现是否正确、代码是否符合规范、是否有潜在的安全问题等。对于不符合要求的 PR，需要进行修改，直至其通过；如果该 PR 的改动过大，或者对功能做出重大调整，告知我后，暂不处理。
-   - 需要更新 CHANGELOG.md，记录非 dependabot 的改动内容。
+   - 需要更新 CHANGELOG.md，记录非 dependabot 的改动内容。如果非 WCY-dt 或 dependabot 贡献了该 PR，则需要标注上贡献者名字。如果 PR 解决了某个 issue，则需要标注 issue 编号。
+   - PR #$($newPullRequest.number) 需要更新 description，每行一条 `Fixed #<issue number>`，记录修复的 Issue。
+
 2. 查看当前所有 Issue（$issueText），并进行实现：
-   - 每实现一个功能，需要记得 commit 到 $releaseBranch 分支；
-   - 有些 Issue 可能需要大改，或者对功能做出重大调整，告知我后，暂不处理；
-   - 有些 Issue 可能提供的信息不够充分，自动回复该 Issue，要求提供更多信息，暂不处理；
-   - 有些 Issue 可能在修改后无法进行验证，这一类 Issue 需要直接修改，并在修改完后检查代码逻辑，以取代实际验证；
-   - 开发时，不要一个功能就做一次验证，这样太浪费时间了；
-   - 开发全部完成后，如果有涉及到 UI 的功能，基于改动大小，决定是否使用你的 computer use 能力进行 UI 测试验证；
-   - 开发全部完成后，需要更新 CHANGELOG.md，记录本次版本的改动内容；
-   - PR #$($newPullRequest.number) 需要更新 description，每行一条 `Fixed #<issue number>`，记录本次版本修复的 Issue；
+   - 每实现一个功能，需要记得 commit 到 $releaseBranch 分支。
+   - 有些 Issue 可能需要大改，或者对功能做出重大调整，告知我后，由我决定是否处理。
+   - 有些 Issue 可能想法和功能很好，但细节上不够好，你可以主动分析并提出新的方案，然后按照新方案实现。
+   - 有些 Issue 可能提供的信息不够充分，自动回复该 Issue，要求提供更多信息，暂不处理。
+   - 有些 Issue 可能在修改后无法进行验证，这一类 Issue 需要直接修改，并在修改完后检查代码逻辑，以取代实际验证。
+   - 开发时，不要一个功能就做一次验证，这样太浪费时间了。但需要每个 issue 或者功能进行一次 commit。
+   - 开发全部完成后，需要更新 CHANGELOG.md，记录本次版本的改动内容。全部结束前要去掉 `## [Unreleased]`。
+   - 开发全部完成后，如果有涉及到 UI 的功能，无需走测，但需要总结并告知我改动位置与触发条件，方便我手动测试。
+   - PR #$($newPullRequest.number) 需要更新 description，每行一条 `Fixed #<issue number>`，记录修复的 Issue。
 
 我本机有 `gh` 指令，你也许需要用到。
+
+最终需要确保 PR 的自动化 check 通过。
 "@
 
     Write-Output $summary

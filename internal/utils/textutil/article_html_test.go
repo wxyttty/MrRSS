@@ -1,9 +1,52 @@
 package textutil
 
 import (
+	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/PuerkitoBio/goquery"
 )
+
+func TestArticleHTMLRejectsParserMutationAndEventHandlers(t *testing.T) {
+	for _, input := range []string{
+		`<p>safe</p><p><noscript></p><img src=x onerror="alert(1)"></noscript></p>`,
+		`<noscript><p title="</noscript><img src=x onerror=alert(1)>">`,
+		`<noembed><img src=x onerror=alert(1)></noembed>`,
+		`<noframes><img src=x onerror=alert(1)></noframes>`,
+		`<xmp><img src=x onerror=alert(1)></xmp>`,
+		`<svg><foreignObject><img src=x onerror=alert(1)></foreignObject></svg>`,
+		`<math><annotation-xml encoding="text/html"><img src=x onerror=alert(1)></annotation-xml></math>`,
+		`<img src=x ONERROR=alert(1)><details open ontoggle=alert(1)>safe</details>`,
+		`<a href="java&#x73;cript:alert(1)">bad</a><iframe srcdoc="<script>alert(1)</script>" src="https://evil.example"></iframe>`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			got := PrepareArticleContent(input, "https://example.org/article")
+			for _, bad := range []string{"onerror", "ontoggle", "javascript:", "<noscript", "<noembed", "<noframes", "<xmp", "<svg", "annotation-xml", "srcdoc"} {
+				if strings.Contains(strings.ToLower(got), bad) {
+					t.Errorf("unsafe %q in %s", bad, got)
+				}
+			}
+			if again := PrepareArticleContent(got, "https://example.org/article"); again != got {
+				t.Errorf("unstable serialization: %s -> %s", got, again)
+			}
+		})
+	}
+}
+
+func TestMarkdownTranslationUsesArticleSanitizer(t *testing.T) {
+	input := `Hello <img src="https://example.org/a.jpg" onerror=alert(1)><details ontoggle=alert(1)>text</details><a href="java&#x73;cript:alert(1)">link</a>`
+	for _, got := range []string{SanitizeHTML(input), ConvertMarkdownToHTML(input)} {
+		for _, bad := range []string{"onerror", "ontoggle", "javascript:"} {
+			if strings.Contains(got, bad) {
+				t.Errorf("unsafe %q in %s", bad, got)
+			}
+		}
+		if !strings.Contains(got, "https://example.org/a.jpg") {
+			t.Errorf("safe image lost: %s", got)
+		}
+	}
+}
 
 func TestArticleMarkdownAndCodeFormatting(t *testing.T) {
 	got := PrepareArticleContent("# Heading\n\n| A | B |\n|---|---|\n|1|2|\n\n```go\nfmt.Println(1)\n```", "https://example.org/article")
@@ -49,12 +92,87 @@ func TestArticleHTMLPreservesImageNoReferrer(t *testing.T) {
 		}
 	}
 	for _, content := range []string{
-		`<img src="/photo.jpg" referrerpolicy="unsafe-url">`,
-		`<img src="/photo.jpg" referrerpolicy="invalid">`,
 		`<a href="/link" referrerpolicy="no-referrer">link</a>`,
 	} {
 		if got := PrepareArticleContent(content, "https://example.org"); strings.Contains(got, "referrerpolicy") {
 			t.Errorf("unexpected policy retained: %s", got)
+		}
+	}
+}
+
+func TestArticleImagesDefaultToNoReferrer(t *testing.T) {
+	for _, content := range []string{
+		`<img src="http://img.example/get?src=http://mmbiz.qpic.cn/photo">`,
+		`<img src="/photo.jpg" referrerpolicy="unsafe-url">`,
+		`<img data-src="//img.example/photo" referrerpolicy="invalid">`,
+		`![photo](https://img.example/photo)`,
+	} {
+		// A heading makes the final case an unambiguous Markdown source.
+		if strings.HasPrefix(content, "![") {
+			content = "# Article\n\n" + content
+		}
+		got := PrepareArticleContent(content, "https://example.org/article")
+		if strings.Count(got, `referrerpolicy="no-referrer"`) != 1 || strings.Contains(got, "unsafe-url") {
+			t.Errorf("image must use no-referrer: %s", got)
+		}
+	}
+}
+
+func TestArticleImageSourcePriorityAndValidation(t *testing.T) {
+	base, _ := url.Parse("https://example.org/news/article")
+	for _, test := range []struct {
+		name       string
+		attributes map[string]string
+		want       string
+	}{
+		{"existing lazy priority", map[string]string{"data-src": "/data.jpg", "data-original": "/original.jpg", "zoomfile": "/full.jpg", "src": "/none.gif"}, "https://example.org/data.jpg"},
+		{"original lazy priority", map[string]string{"data-original": "/original.jpg", "data-lazy-src": "/lazy.jpg"}, "https://example.org/original.jpg"},
+		{"remaining lazy priority", map[string]string{"data-lazy-src": "/lazy.jpg", "data-actualsrc": "/actual.jpg", "data-original-src": "/original-src.jpg"}, "https://example.org/lazy.jpg"},
+		{"actual before original src", map[string]string{"data-actualsrc": "/actual.jpg", "data-original-src": "/original-src.jpg"}, "https://example.org/actual.jpg"},
+		{"original src before discuz", map[string]string{"data-original-src": "/original-src.jpg", "zoomfile": "/full.jpg"}, "https://example.org/original-src.jpg"},
+		{"discuz full before thumbnail", map[string]string{"zoomfile": "../full.jpg", "file": "/thumb.jpg", "src": "/none.gif"}, "https://example.org/full.jpg"},
+		{"invalid candidates continue", map[string]string{"data-src": "javascript:alert(1)", "data-original": "http:///missing-host.jpg", "zoomfile": "data:image/png;base64,AAAA", "file": "//cdn.example/photo.jpg", "src": "/none.gif"}, "https://cdn.example/photo.jpg"},
+		{"malformed candidates continue", map[string]string{"data-src": "%zz", "zoomfile": "#image", "file": "blob:https://example.org/id", "src": "/photo.jpg"}, "https://example.org/photo.jpg"},
+		{"already decoded entity remains literal", map[string]string{"zoomfile": "/image?a=1&amp;b=2"}, "https://example.org/image?a=1&amp;b=2"},
+		{"ordinary source", map[string]string{"src": "images/photo.jpg"}, "https://example.org/news/images/photo.jpg"},
+		{"inline source preserved by caller", map[string]string{"src": "data:image/png;base64,aGVsbG8="}, ""},
+		{"no source", map[string]string{}, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := ResolveArticleImageSource(test.attributes, base); got != test.want {
+				t.Errorf("got %q, want %q", got, test.want)
+			}
+		})
+	}
+	if got := ResolveArticleImageSource(map[string]string{"zoomfile": "/relative.jpg", "file": "https://cdn.example/full.jpg"}, nil); got != "https://cdn.example/full.jpg" {
+		t.Errorf("nil base must skip relative candidates: %q", got)
+	}
+}
+
+func TestArticleHTMLPromotesDiscuzImagesBeforeSanitizing(t *testing.T) {
+	content := `<p>Article body.</p><ignore_js_op><img style="cursor:pointer" id="aimg_5366234" src="static/image/common/none.gif" onclick="zoom(this)" zoomfile="https://att.huarenjie.com/attachment/forum/202609/29/004010ve8fzabf4ee88kua.jpg" file="https://att.huarenjie.com/attachment/forum/202609/29/004010ve8fzabf4ee88kua.jpg.thumb.jpg"></ignore_js_op><img data-src="java&#x73;cript:alert(1)" zoomfile="../full.jpg?size=large&amp;type=image" file="/thumb.jpg" src="/none.gif"><img src="data:image/png;base64,aGVsbG8="><img data-original-src="/original.jpg" src="/none.gif">`
+	got := PrepareArticleContent(content, "https://example.org/news/article")
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"https://att.huarenjie.com/attachment/forum/202609/29/004010ve8fzabf4ee88kua.jpg",
+		"https://example.org/full.jpg?size=large&type=image",
+		"data:image/png;base64,aGVsbG8=",
+		"https://example.org/original.jpg",
+	}
+	if doc.Find("img").Length() != len(want) {
+		t.Fatalf("unexpected image count: %s", got)
+	}
+	doc.Find("img").Each(func(i int, image *goquery.Selection) {
+		if image.AttrOr("src", "") != want[i] || image.AttrOr("referrerpolicy", "") != "no-referrer" {
+			t.Errorf("unexpected image %d: %s", i, got)
+		}
+	})
+	for _, unsafe := range []string{"onclick", "zoomfile", "file=", "javascript:", "none.gif", ".thumb.jpg", "data-original-src"} {
+		if strings.Contains(got, unsafe) {
+			t.Errorf("unexpected %q in sanitized article: %s", unsafe, got)
 		}
 	}
 }

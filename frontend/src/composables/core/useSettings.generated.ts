@@ -13,6 +13,7 @@ import { settingsDefaults } from '@/config/defaults';
  */
 export function generateInitialSettings(): SettingsData {
   return {
+    ads_snoozed_until: settingsDefaults.ads_snoozed_until,
     ai_api_key: settingsDefaults.ai_api_key,
     ai_chat_enabled: settingsDefaults.ai_chat_enabled,
     ai_chat_profile_id: settingsDefaults.ai_chat_profile_id,
@@ -53,6 +54,7 @@ export function generateInitialSettings(): SettingsData {
     custom_translation_name: settingsDefaults.custom_translation_name,
     custom_translation_response_path: settingsDefaults.custom_translation_response_path,
     custom_translation_timeout: settingsDefaults.custom_translation_timeout,
+    data_directory: settingsDefaults.data_directory,
     date_format: settingsDefaults.date_format,
     deepl_api_key: settingsDefaults.deepl_api_key,
     deepl_endpoint: settingsDefaults.deepl_endpoint,
@@ -130,6 +132,7 @@ export function generateInitialSettings(): SettingsData {
     siyuan_endpoint: settingsDefaults.siyuan_endpoint,
     siyuan_folder: settingsDefaults.siyuan_folder,
     siyuan_notebook_id: settingsDefaults.siyuan_notebook_id,
+    startup_minimized: settingsDefaults.startup_minimized,
     startup_on_boot: settingsDefaults.startup_on_boot,
     summary_enabled: settingsDefaults.summary_enabled,
     summary_length: settingsDefaults.summary_length,
@@ -166,6 +169,7 @@ export function generateInitialSettings(): SettingsData {
  */
 export function parseSettingsData(data: Record<string, string>): SettingsData {
   return {
+    ads_snoozed_until: data.ads_snoozed_until || settingsDefaults.ads_snoozed_until,
     ai_api_key: data.ai_api_key || settingsDefaults.ai_api_key,
     ai_chat_enabled: data.ai_chat_enabled === 'true',
     ai_chat_profile_id: data.ai_chat_profile_id || settingsDefaults.ai_chat_profile_id,
@@ -206,6 +210,7 @@ export function parseSettingsData(data: Record<string, string>): SettingsData {
     custom_translation_name: data.custom_translation_name || settingsDefaults.custom_translation_name,
     custom_translation_response_path: data.custom_translation_response_path || settingsDefaults.custom_translation_response_path,
     custom_translation_timeout: parseInt(data.custom_translation_timeout) || settingsDefaults.custom_translation_timeout,
+    data_directory: data.data_directory || settingsDefaults.data_directory,
     date_format: data.date_format || settingsDefaults.date_format,
     deepl_api_key: data.deepl_api_key || settingsDefaults.deepl_api_key,
     deepl_endpoint: data.deepl_endpoint || settingsDefaults.deepl_endpoint,
@@ -283,6 +288,7 @@ export function parseSettingsData(data: Record<string, string>): SettingsData {
     siyuan_endpoint: data.siyuan_endpoint || settingsDefaults.siyuan_endpoint,
     siyuan_folder: data.siyuan_folder || settingsDefaults.siyuan_folder,
     siyuan_notebook_id: data.siyuan_notebook_id || settingsDefaults.siyuan_notebook_id,
+    startup_minimized: data.startup_minimized === 'true',
     startup_on_boot: data.startup_on_boot === 'true',
     summary_enabled: data.summary_enabled === 'true',
     summary_length: data.summary_length || settingsDefaults.summary_length,
@@ -359,6 +365,7 @@ export function buildAutoSavePayload(settingsRef: Ref<SettingsData>): Record<str
     custom_translation_name: settingsRef.value.custom_translation_name ?? settingsDefaults.custom_translation_name,
     custom_translation_response_path: settingsRef.value.custom_translation_response_path ?? settingsDefaults.custom_translation_response_path,
     custom_translation_timeout: (settingsRef.value.custom_translation_timeout ?? settingsDefaults.custom_translation_timeout).toString(),
+    data_directory: settingsRef.value.data_directory ?? settingsDefaults.data_directory,
     date_format: settingsRef.value.date_format ?? settingsDefaults.date_format,
     deepl_api_key: settingsRef.value.deepl_api_key ?? settingsDefaults.deepl_api_key,
     deepl_endpoint: settingsRef.value.deepl_endpoint ?? settingsDefaults.deepl_endpoint,
@@ -433,6 +440,7 @@ export function buildAutoSavePayload(settingsRef: Ref<SettingsData>): Record<str
     siyuan_endpoint: settingsRef.value.siyuan_endpoint ?? settingsDefaults.siyuan_endpoint,
     siyuan_folder: settingsRef.value.siyuan_folder ?? settingsDefaults.siyuan_folder,
     siyuan_notebook_id: settingsRef.value.siyuan_notebook_id ?? settingsDefaults.siyuan_notebook_id,
+    startup_minimized: (settingsRef.value.startup_minimized ?? settingsDefaults.startup_minimized).toString(),
     startup_on_boot: (settingsRef.value.startup_on_boot ?? settingsDefaults.startup_on_boot).toString(),
     summary_enabled: (settingsRef.value.summary_enabled ?? settingsDefaults.summary_enabled).toString(),
     summary_length: settingsRef.value.summary_length ?? settingsDefaults.summary_length,

@@ -355,6 +355,7 @@ func (c *Client) GetReadArticles(ctx context.Context, maxItems int) ([]Article, 
 // streamID: e.g., "user/-/state/com.google/reading-list", "user/-/state/com.google/starred", "feed/http://..."
 //   - NOTE: FreshRSS does NOT support "user/-/state/com.google/read" as a stream path
 //     (returns 400). To get read articles, fetch "reading-list" and filter by categories.
+//
 // excludeTypes: list of states to exclude, e.g., ["user/-/state/com.google/read"]
 // maxItems: maximum number of items to retrieve
 // continuationToken: token for pagination (empty for first request)

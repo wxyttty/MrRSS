@@ -1,4 +1,5 @@
 {
+  "ads_snoozed_until": "0",
   "ai_api_key": "",
   "ai_chat_enabled": false,
   "ai_chat_profile_id": "",
@@ -39,6 +40,7 @@
   "custom_translation_name": "",
   "custom_translation_response_path": "",
   "custom_translation_timeout": 10,
+  "data_directory": "",
   "date_format": "locale",
   "deepl_api_key": "",
   "deepl_endpoint": "",
@@ -116,6 +118,7 @@
   "siyuan_endpoint": "http://127.0.0.1:6806",
   "siyuan_folder": "/MrRSS",
   "siyuan_notebook_id": "",
+  "startup_minimized": false,
   "startup_on_boot": false,
   "summary_enabled": true,
   "summary_length": "medium",

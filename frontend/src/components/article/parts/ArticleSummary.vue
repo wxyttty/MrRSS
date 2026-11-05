@@ -12,6 +12,8 @@ import {
   PhCopy,
 } from '@phosphor-icons/vue';
 import { useI18n } from 'vue-i18n';
+import { openInBrowser } from '@/utils/browser';
+import { sanitizeArticleHTML } from '@/utils/articleHtml';
 
 interface Props {
   summaryResult: {
@@ -165,16 +167,7 @@ async function handleSummaryLinkClick(event: MouseEvent) {
     event.preventDefault();
     event.stopPropagation();
 
-    try {
-      await fetch('/api/browser/open', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: anchor.href }),
-      });
-    } catch (error) {
-      console.error('Failed to open link:', error);
-      window.showToast(t('common.errors.failedToOpenLink'), 'error');
-    }
+    await openInBrowser(anchor.href);
   }
 }
 </script>
@@ -306,7 +299,7 @@ async function handleSummaryLinkClick(event: MouseEvent) {
               v-if="shouldShowTranslatedSummary"
               class="text-xs text-text-primary leading-snug select-text prose prose-xs max-w-none"
               @click="handleSummaryLinkClick"
-              v-html="translatedSummary?.html || translatedSummary?.text"
+              v-html="sanitizeArticleHTML(translatedSummary?.html || translatedSummary?.text)"
             ></div>
             <div v-else class="flex items-center gap-1 text-xs text-text-secondary">
               <PhSpinnerGap :size="12" class="animate-spin" />
@@ -320,7 +313,7 @@ async function handleSummaryLinkClick(event: MouseEvent) {
           <div
             class="text-xs text-text-primary leading-snug select-text prose prose-xs max-w-none"
             @click="handleSummaryLinkClick"
-            v-html="summaryResult.html || summaryResult.summary"
+            v-html="sanitizeArticleHTML(summaryResult.html || summaryResult.summary)"
           ></div>
         </div>
 
